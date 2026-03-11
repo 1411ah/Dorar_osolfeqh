@@ -1,6 +1,3 @@
-data/output/
-data/raw/
-data/.progress.json
 __pycache__/
 *.pyc
 .venv/
