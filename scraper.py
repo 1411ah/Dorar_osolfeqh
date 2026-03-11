@@ -31,7 +31,10 @@ EPUB_PATH   = OUT_DIR / "osolfeqh.epub"
 MD_DIR      = OUT_DIR / "md"
 BOOK_TITLE  = "موسوعة أصول الفقه"
 
-FRONT_PAGES: list[tuple[str, str]] = []
+FRONT_PAGES: list[tuple[str, str]] = [
+    ("المَنهجُ المُتَّبعُ في الموسوعةِ", "https://dorar.net/article/2108"),
+    ("اعتمادُ مَنهجِ الموسوعةِ",         "https://dorar.net/article/2109"),
+]
 BACK_PAGES:  list[tuple[str, str]] = [
     ("المراجع المعتمدة", "https://dorar.net/refs/osolfeqh"),
 ]
@@ -60,15 +63,32 @@ _session = requests.Session()
 _session.headers.update(HEADERS)
 
 
-def fetch(url: str) -> BeautifulSoup | None:
-    try:
-        r = _session.get(url, timeout=TIMEOUT)
-        r.raise_for_status()
-        r.encoding = "utf-8"
-        return BeautifulSoup(r.text, "html.parser")
-    except Exception as exc:
-        print(f"  [ERROR] {url}: {exc}")
-        return None
+_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.0 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0",
+]
+_ua_index = 0
+
+
+def fetch(url: str, retries: int = 3) -> BeautifulSoup | None:
+    global _ua_index
+    for attempt in range(1, retries + 1):
+        _session.headers["User-Agent"] = _USER_AGENTS[_ua_index % len(_USER_AGENTS)]
+        try:
+            r = _session.get(url, timeout=TIMEOUT)
+            if r.status_code == 403:
+                print(f"  [403] {url} — تغيير User-Agent (محاولة {attempt})")
+                _ua_index += 1
+                time.sleep(2 * attempt)
+                continue
+            r.raise_for_status()
+            r.encoding = "utf-8"
+            return BeautifulSoup(r.text, "html.parser")
+        except Exception as exc:
+            print(f"  [ERROR] {url}: {exc} (محاولة {attempt})")
+            time.sleep(2 * attempt)
+    return None
 
 
 # ── Data Classes ──────────────────────────────────────────────────────────────
@@ -126,6 +146,62 @@ def safe_name(s: str, maxlen: int = 80) -> str:
 
 
 # ── Special Pages ─────────────────────────────────────────────────────────────
+def _normalize_article_html(body: BeautifulSoup) -> None:
+    """
+    صفحات /article/ تستخدم inline styles للعناوين بدل CSS classes:
+      strong[color:#A52A2A / #B22222]  →  <h3>
+      strong[color:#008000]            →  <h4>
+    """
+    BROWN_RE = re.compile(r"color\s*:\s*#(A52A2A|B22222|8B0000)", re.I)
+    GREEN_RE = re.compile(r"color\s*:\s*#(008000|006400|228B22)", re.I)
+
+    for strong in body.find_all("strong"):
+        style = strong.get("style", "")
+        txt   = strong.get_text(strip=True)
+        if not txt:
+            continue
+        if BROWN_RE.search(style):
+            strong.replace_with(BeautifulSoup(f"<h3>{txt}</h3>", "html.parser"))
+        elif GREEN_RE.search(style):
+            strong.replace_with(BeautifulSoup(f"<h4>{txt}</h4>", "html.parser"))
+
+    # تنظيف inline dir/style على الفقرات
+    for p in body.find_all("p"):
+        p.attrs = {}
+
+
+def _extract_article_content(soup: BeautifulSoup, pid: str) -> tuple[str, list]:
+    """صفحات /article/ — المحتوى مباشرة في div#cntnt بدون div.w-100.mt-4"""
+    cntnt = soup.find("div", id="cntnt")
+    if not cntnt:
+        return "", []
+
+    body = BeautifulSoup(str(cntnt), "html.parser")
+
+    for tag in body.find_all(["nav", "header", "footer", "script", "style", "form"]):
+        tag.decompose()
+    for a in body.find_all("a"):
+        if NAV_TEXT_RE.search(a.get_text()):
+            a.decompose()
+
+    _normalize_article_html(body)
+
+    footnotes: list[tuple[str, str]] = []
+    fn_n = 0
+    for span in body.find_all("span", class_="tip"):
+        fn_text = span.get_text(strip=True)
+        fn_n   += 1
+        fn_id   = f"fn-{pid}-{fn_n}"
+        footnotes.append((fn_id, fn_text))
+        anchor = BeautifulSoup(
+            f'<sup id="ref-{fn_id}"><a href="#{fn_id}">[{fn_n}]</a></sup>',
+            "html.parser",
+        )
+        span.replace_with(anchor)
+
+    return body.decode_contents(), footnotes
+
+
 def scrape_special_page(url: str, pid: str, title: str, level: int = 1) -> "Page | None":
     print(f"  special [{pid}]: {url}")
     soup = fetch(url)
@@ -138,8 +214,9 @@ def scrape_special_page(url: str, pid: str, title: str, level: int = 1) -> "Page
         title = real_title
 
     if "/refs/" in url:
-        body_html  = _extract_refs_content(soup)
-        footnotes  = []
+        body_html, footnotes = _extract_refs_content(soup), []
+    elif "/article/" in url:
+        body_html, footnotes = _extract_article_content(soup, pid)
     else:
         body_html, footnotes = extract_content(soup, pid)
 
