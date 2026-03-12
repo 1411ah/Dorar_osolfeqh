@@ -182,7 +182,9 @@ def _extract_article_content(soup: BeautifulSoup, pid: str) -> tuple[str, list]:
         tag.decompose()
     for a in body.find_all("a"):
         if NAV_TEXT_RE.search(a.get_text()):
-            a.decompose()
+            a.decompose()  # نص التنقل نفسه زائد → يُحذف كلياً
+        else:
+            a.unwrap()     # رابط على نص محتوى → يبقى النص
 
     _normalize_article_html(body)
 
@@ -314,7 +316,7 @@ def extract_content(soup: BeautifulSoup, pid: str) -> tuple[str, list[tuple[str,
 
     for a in body.find_all("a", href=True):
         if "/hadith/sharh/" in a["href"] or "/tafseer/" in a["href"]:
-            a.decompose()
+            a.unwrap()  # النص (الحديث/الآية) يبقى، الرابط الخارجي يُزال
 
     for h3 in body.find_all("h3", id="more-titles"):
         nxt = h3.find_next_sibling("ul")
@@ -351,7 +353,7 @@ def extract_content(soup: BeautifulSoup, pid: str) -> tuple[str, list[tuple[str,
     for span in body.find_all("span"):
         cls = set(span.get("class", []))
         for a in span.find_all("a"):
-            a.decompose()
+            a.unwrap()  # النص داخل الـ span يبقى، الرابط يُزال
         txt = span.get_text(strip=True)
 
         if "aaya" in cls:
